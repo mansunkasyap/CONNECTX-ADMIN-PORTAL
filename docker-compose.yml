@@ -1,0 +1,12 @@
+version: '3.9'
+services:
+  api:
+    image: 'rohin123/connectx_admin_react:latest'
+    restart: always
+    ports:
+      - 5173:5173
+# services:
+#   app:
+#     build: .
+#     ports:
+#       - '5173:5173'
