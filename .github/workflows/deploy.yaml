@@ -1,63 +1,123 @@
-name: Deploy POC to GitHub Pages
-
-# Runs only on pushes to the POC branch, or when triggered manually.
-# It never runs on "main", so it can never collide with deploy.yaml
-# (production), which only triggers on pushes to main.
+name: Deploy to Production
 on:
   push:
     branches:
-      - main   # change if your POC branch is named differently
-  workflow_dispatch:
+      - main
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
+  security-events: write
+  actions: read
 
-concurrency:
-  group: "pages"
-  cancel-in-progress: false
+env:
+  NODE_VERSION: '20'
+  DEPLOY_PATH: '/var/public/CONNECTX-ADMIN-PORTAL'
+  BACKUP_PATH: '/var/public/backup'
+  BACKUP_RETENTION: 3
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
+      
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
-
+      
       - name: Install dependencies
         run: npm ci
-
+        # run: npm install
+      
+      - name: Run Trivy vulnerability scanner on dependencies
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      # - name: Upload Trivy results to GitHub Security
+      #   uses: github/codeql-action/upload-sarif@v4
+      #   if: always()
+      #   with:
+      #     sarif_file: 'trivy-results.sarif'
+      
       - name: Build project
         run: npm run build
-
-      - name: Add SPA fallback for client-side routing
-        # GitHub Pages has no server-side rewrite rules, so a hard refresh on
-        # any route other than "/" would 404. Serving index.html as 404.html
-        # lets the React Router (basename-aware) take over and resolve the route.
-        run: cp dist/index.html dist/404.html
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Upload build artifact
-        uses: actions/upload-pages-artifact@v3
+      
+      - name: Run Trivy scanner on build artifacts
+        uses: aquasecurity/trivy-action@master
         with:
-          path: dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          scan-type: 'fs'
+          scan-ref: 'dist'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Create deployment archive
+        run: tar -czf deploy.tar.gz -C dist .
+      
+      - name: Transfer build to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "deploy.tar.gz"
+          target: "/tmp"
+      
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            
+            DEPLOY_PATH="${{ env.DEPLOY_PATH }}"
+            BACKUP_PATH="${{ env.BACKUP_PATH }}"
+            TIMESTAMP=$(date +%Y-%m-%d_%H-%M-%S)
+            
+            echo "🚀 Starting deployment at $TIMESTAMP..."
+            
+            # Ensure backup directory exists
+            if [ ! -d "$BACKUP_PATH" ]; then
+              echo "📁 Creating backup directory..."
+              sudo mkdir -p "$BACKUP_PATH"
+            fi
+            
+            # Backup current deployment if exists
+            if [ -d "$DEPLOY_PATH" ]; then
+              echo "📦 Creating backup..."
+              sudo cp -r "$DEPLOY_PATH" "$BACKUP_PATH/CONNECTX-ADMIN-PORTAL_backup_$TIMESTAMP"
+            fi
+            
+            # Deploy new build
+            echo "📥 Extracting new build..."
+            sudo mkdir -p "$DEPLOY_PATH"
+            sudo tar -xzf /tmp/deploy.tar.gz -C "$DEPLOY_PATH"
+            
+            # Cleanup transfer file
+            rm /tmp/deploy.tar.gz
+            
+            # Test and reload nginx
+            echo "🔄 Reloading Nginx..."
+            sudo nginx -t || { echo "❌ Nginx config test failed"; exit 1; }
+            sudo systemctl reload nginx || { echo "❌ Nginx reload failed"; exit 1; }
+            
+            # Cleanup old backups (keep only last N backups)
+            echo "🧹 Cleaning old backups..."
+            cd "$BACKUP_PATH"
+            ls -t connectx_customer_fe_backup_* 2>/dev/null | tail -n +$((${{ env.BACKUP_RETENTION }} + 1)) | xargs -r sudo rm -rf
+            
+            echo "✅ Deployment completed successfully at $(date)!"
