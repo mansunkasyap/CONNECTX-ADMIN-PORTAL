@@ -169,6 +169,9 @@ const Login = () => {
             </div>
           </div>
         </Col>
+        <div>
+          test
+        </div>
       </Row>
       <ToastContainer position="bottom-end" className="m-4">
         <Toast show={isSuccess} bg="success" animation={true}>
