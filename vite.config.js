@@ -8,7 +8,7 @@ export default defineConfig({
     // GitHub Pages serves project pages from https://<user>.github.io/<repo-name>/,
     // so every built asset URL needs this prefix. Update the name if your repo
     // is named differently.
-    base: "/CONNECTX-ADMIN-PORTAL/",
+    base: "/",
     plugins: [react()],
     css: {
         preprocessorOptions: {
