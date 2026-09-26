@@ -1,7 +1,7 @@
 const config = {
 
 
-nodeUrl: "https://web.connectx.co.in",
+nodeUrl: "http://localhost:8002",
 reactUrl: "https://connectx.co.in/",  
 
 
